@@ -1,6 +1,8 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_blue_plus/flutter_blue_plus.dart';
 import 'package:permission_handler/permission_handler.dart';
+import 'dart:io' show Platform;
+import 'dart:async';
 
 void main() {
   runApp(const MyApp());
@@ -28,7 +30,8 @@ class _BLEScannerState extends State<BLEScanner> {
   List<ScanResult> scanResults = [];
   bool isScanning = false;
   String message = '';
-  Map<Permission, bool> permissionsStatus = {};
+  Map<String, String> permissionsStatus = {}; // 表示用の権限ステータス
+  StreamSubscription? scanSubscription;
 
   @override
   void initState() {
@@ -38,17 +41,37 @@ class _BLEScannerState extends State<BLEScanner> {
 
   // パーミッションのリクエストとスキャン開始
   Future<void> requestPermissionsAndStartScan() async {
-    Map<Permission, PermissionStatus> statuses = await [
-      Permission.bluetoothScan,
-      Permission.bluetoothConnect,
-      Permission.location, // 位置情報のパーミッション
-    ].request();
+    Map<Permission, PermissionStatus> statuses;
+
+    if (Platform.isAndroid) {
+      statuses = await [
+        Permission.bluetoothScan,
+        Permission.bluetoothConnect,
+        Permission.location,
+      ].request();
+    } else if (Platform.isIOS) {
+      statuses = await [
+        Permission.bluetooth,
+      ].request();
+    } else {
+      statuses = {};
+    }
 
     setState(() {
+      // 各パーミッションの状態を共通の表示フォーマットに合わせる
       permissionsStatus = {
-        Permission.bluetoothScan: statuses[Permission.bluetoothScan]?.isGranted ?? false,
-        Permission.bluetoothConnect: statuses[Permission.bluetoothConnect]?.isGranted ?? false,
-        Permission.location: statuses[Permission.location]?.isGranted ?? false,
+        "(Android)Bluetooth Scan": Platform.isAndroid
+            ? (statuses[Permission.bluetoothScan]?.isGranted ?? false) ? '許可' : '未許可'
+            : "サポートされていません",
+        "(Android)Bluetooth Connect": Platform.isAndroid
+            ? (statuses[Permission.bluetoothConnect]?.isGranted ?? false) ? '許可' : '未許可'
+            : "サポートされていません",
+        "(Android)位置情報": Platform.isAndroid || Platform.isIOS
+            ? (statuses[Permission.location]?.isGranted ?? false) ? '許可' : '未許可'
+            : "サポートされていません",
+        "(iPhone)Bluetooth": Platform.isIOS
+            ? (statuses[Permission.bluetooth]?.isGranted ?? false) ? '許可' : '未許可'
+            : "サポートされていません",
       };
     });
 
@@ -65,11 +88,8 @@ class _BLEScannerState extends State<BLEScanner> {
 
   // BLEスキャンを開始
   void startScan() async {
-    if (isScanning) {
-      return;
-    }
+    if (isScanning) return;
 
-    // Bluetoothが有効か確認
     bool isBluetoothEnabled = await FlutterBluePlus.isOn;
     if (!isBluetoothEnabled) {
       setState(() {
@@ -78,7 +98,6 @@ class _BLEScannerState extends State<BLEScanner> {
       return;
     }
 
-    // 位置情報サービスが有効か確認
     ServiceStatus locationStatus = await Permission.location.serviceStatus;
     if (locationStatus != ServiceStatus.enabled) {
       setState(() {
@@ -94,11 +113,8 @@ class _BLEScannerState extends State<BLEScanner> {
     });
 
     try {
-      // スキャンを10秒間実行
-      FlutterBluePlus.startScan(timeout: const Duration(seconds: 10));
-
-      // スキャン結果を処理
-      FlutterBluePlus.scanResults.listen((results) {
+      FlutterBluePlus.startScan(timeout: const Duration(seconds: 3));
+      scanSubscription = FlutterBluePlus.scanResults.listen((results) {
         setState(() {
           scanResults = results;
         });
@@ -107,21 +123,14 @@ class _BLEScannerState extends State<BLEScanner> {
         }
       });
 
-      // スキャンの完了を待機
-      await Future.delayed(const Duration(seconds: 10));
-
-      // スキャンを停止
+      await Future.delayed(const Duration(seconds: 3));
       FlutterBluePlus.stopScan();
+      scanSubscription?.cancel();
 
       setState(() {
         isScanning = false;
-        if (scanResults.isEmpty) {
-          message = 'デバイスが見つかりませんでした';
-        } else {
-          message = 'スキャン完了';
-        }
+        message = scanResults.isEmpty ? 'デバイスが見つかりませんでした' : 'スキャン完了';
       });
-
     } catch (e) {
       setState(() {
         isScanning = false;
@@ -133,71 +142,60 @@ class _BLEScannerState extends State<BLEScanner> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-        appBar: AppBar(
-          title: const Text('BLEデバイススキャナ'),
-        ),
-        body: Column(
-          children: [
-            Padding(
-              padding: const EdgeInsets.all(16.0),
-              child: ElevatedButton(
-                onPressed: !isScanning ? startScan : null,
-                child: const Text('スキャン開始'),
-              ),
+      appBar: AppBar(
+        title: const Text('BLEデバイススキャナ'),
+      ),
+      body: Column(
+        children: [
+          Padding(
+            padding: const EdgeInsets.all(16.0),
+            child: ElevatedButton(
+              onPressed: !isScanning ? startScan : null,
+              child: const Text('スキャン開始'),
             ),
-            if (isScanning)
-              const Padding(
-                padding: EdgeInsets.all(16.0),
-                child: CircularProgressIndicator(),
-              ),
-            Padding(
-              padding: const EdgeInsets.all(16.0),
-              child: Text(
-                message,
-                style: const TextStyle(fontSize: 16, color: Colors.red),
-              ),
+          ),
+          if (isScanning)
+            const Padding(
+              padding: EdgeInsets.all(16.0),
+              child: CircularProgressIndicator(),
             ),
-            // パーミッション状態の表示
-            Padding(
-              padding: const EdgeInsets.all(16.0),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Text(
-                    'Bluetooth Scan パーミッション: ${permissionsStatus[Permission.bluetoothScan] == true ? '許可' : '未許可'}',
-                    style: TextStyle(
-                        fontSize: 16,
-                        color: permissionsStatus[Permission.bluetoothScan] == true ? Colors.green : Colors.red),
+          Padding(
+            padding: const EdgeInsets.all(16.0),
+            child: Text(
+              message,
+              style: const TextStyle(fontSize: 16, color: Colors.red),
+            ),
+          ),
+          Padding(
+            padding: const EdgeInsets.all(16.0),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: permissionsStatus.entries.map((entry) {
+                return Text(
+                  '${entry.key} パーミッション: ${entry.value}',
+                  style: TextStyle(
+                    fontSize: 16,
+                    color: entry.value == '許可' ? Colors.green : Colors.red,
                   ),
-                  Text(
-                    'Bluetooth Connect パーミッション: ${permissionsStatus[Permission.bluetoothConnect] == true ? '許可' : '未許可'}',
-                    style: TextStyle(
-                        fontSize: 16,
-                        color: permissionsStatus[Permission.bluetoothConnect] == true ? Colors.green : Colors.red),
-                  ),
-                  Text(
-                    '位置情報 パーミッション: ${permissionsStatus[Permission.location] == true ? '許可' : '未許可'}',
-                    style: TextStyle(
-                        fontSize: 16,
-                        color: permissionsStatus[Permission.location] == true ? Colors.green : Colors.red),
-                  ),
-                ],
-              ),
+                );
+              }).toList(),
             ),
-            Expanded(
-              child: ListView.builder(
-                itemCount: scanResults.length,
-                itemBuilder: (context, index) {
-                  final result = scanResults[index];
-                  final name = result.device.name.isNotEmpty ? result.device.name : '不明なデバイス';
-                  return ListTile(
-                    title: Text('名前: $name'),
-                    subtitle: Text('アドレス: ${result.device.id.id}, RSSI: ${result.rssi}'),
-                  );
-                },
-              ),
+          ),
+          Expanded(
+            child: ListView.builder(
+              itemCount: scanResults.length,
+              itemBuilder: (context, index) {
+                final result = scanResults[index];
+                final name = result.device.name.isNotEmpty ? result.device.name : '不明なデバイス';
+                return ListTile(
+                  title: Text('名前: $name'),
+                  subtitle: Text('アドレス: ${result.device.id.id}, RSSI: ${result.rssi}'),
+                );
+              },
             ),
-          ],
-        ));
+          ),
+        ],
+      ),
+    );
   }
 }
